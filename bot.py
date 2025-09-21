@@ -136,7 +136,10 @@ async def start_quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     await query.edit_message_text(
         f"تمام! لنبدأ اختبار: **{quiz_name}**\n\n"
-        f"ℹ️ يمكنك إرسال الأمر /cancel في أي وقت لإلغاء الاختبار.",
+        f"يمكنك إرسل الأمر ℹ️
+( /cancel )
+في أي وقت لإلغاء الاختبار
+",
         parse_mode=ParseMode.MARKDOWN
     )
     await send_poll_question(chat_id, context)
