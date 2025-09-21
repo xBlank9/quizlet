@@ -84,7 +84,7 @@ async def quiz_info_page_callback(update: Update, context: ContextTypes.DEFAULT_
     if quiz_name not in quizzes: await query.edit_message_text("عذرًا، هذا الاختبار لم يعد متاحًا."); return
 
     num_questions = len(quizzes[quiz_name])
-    text = (f"أنت على وشك بدء اختبار:\n\n**📖 اسم الاختبار:** {quiz_name}\n**🔢 عدد الأسئلة:** {num_questions}\n**⏱️ الوقت لكل سؤال:** 45 ثانية\n\nهل أنت مستعد؟")
+    text = (f"أنت على وشك بدء اختبار:\n\n**📖 اسم الاختبار:** {quiz_name}\n**🔢 عدد الأسئلة:** {num_questions}\n**⏱️ الوقت لكل سؤال:** 60 ثانية\n\nهل أنت مستعد؟")
     keyboard = [[InlineKeyboardButton("🚀 ابدأ الاختبار", callback_data=f"startquiz_{quiz_name}")], [InlineKeyboardButton("🔙 عودة للقائمة", callback_data="back_to_menu")]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
 
@@ -124,7 +124,7 @@ async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     
     message = await context.bot.send_poll(
         chat_id=chat_id, question=question_text, options=options, type='quiz',
-        correct_option_id=correct_option_id, open_period=45, is_anonymous=False
+        correct_option_id=correct_option_id, open_period=60, is_anonymous=False
     )
     
     session['current_poll_id'] = message.poll.id
