@@ -68,7 +68,14 @@ def parse_quiz_file_line_by_line(file_content: str) -> list:
 # --- Main Menu and Quiz Start ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Displays the main menu of quizzes."""
+    """Displays the main menu of quizzes, preventing interruption of an active quiz."""
+    # NEW: Check if user is already in a quiz
+    if update.effective_chat.id in user_sessions:
+        await update.message.reply_text(
+            "أنت بالفعل في منتصف اختبار. 🙅‍♂️\n"
+            "الرجاء إكماله أولاً، أو استخدم الأمر /cancel لإلغائه وبدء اختبار جديد."
+        )
+        return
     await show_main_menu(update)
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE = None):
@@ -135,8 +142,7 @@ async def start_quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Sends the current question as a quiz poll."""
     session = user_sessions.get(chat_id)
-    if not session:
-        return
+    if not session: return
 
     q_index = session['question_index']
     questions = session['quiz_questions']
@@ -146,7 +152,8 @@ async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         return
 
     q_data = questions[q_index]
-    question_text = f"السؤال {q_index + 1} من {len(questions)}: {q_data['question']}"
+    # NEW: Changed question header format
+    question_text = f"({q_index + 1}/{len(questions)}) {q_data['question']}"
     options = [q_data['correct']] + q_data['incorrect']
     random.shuffle(options)
     correct_option_id = options.index(q_data['correct'])
@@ -157,11 +164,10 @@ async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         options=options,
         type='quiz',
         correct_option_id=correct_option_id,
-        open_period=45,  # 45-second timer
+        open_period=45,
         is_anonymous=False
     )
     
-    # Store poll info to check the answer later
     session['current_poll_id'] = message.poll.id
     session['correct_option_id'] = correct_option_id
 
@@ -169,27 +175,22 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Handles a user's answer to a poll."""
     answer = update.poll_answer
     poll_id = answer.poll_id
-    # Use answer.user.id because poll answers are sent in a private chat with the bot
     user_id = answer.user.id
     
     session = user_sessions.get(user_id)
-    # Check if the answer corresponds to the current question for that user
-    if not session or session.get('current_poll_id') != poll_id:
-        return
+    if not session or session.get('current_poll_id') != poll_id: return
 
     chosen_option = answer.option_ids[0]
     if chosen_option == session['correct_option_id']:
         session['score'] += 1
 
     session['question_index'] += 1
-    # Automatically send the next question after a short delay
     await send_poll_question(user_id, context)
 
 async def end_quiz(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Ends the quiz and sends results."""
     session = user_sessions.get(chat_id)
-    if not session:
-        return
+    if not session: return
 
     score, total, quiz_name, user_info = session['score'], len(session['quiz_questions']), session['quiz_name'], session['user_info']
     
@@ -200,50 +201,48 @@ async def end_quiz(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
 
     admin_id = os.environ.get("ADMIN_ID")
     if admin_id and user_info:
-        user_name = user_info.get('name')
-        user_username = f"(@{user_info.get('username')})" if user_info.get('username') else ""
+        user_name = user_info.get('name'); user_username = f"(@{user_info.get('username')})" if user_info.get('username') else ""
         notification_text = (
             f"📊 **نتيجة اختبار جديدة**\n\n"
-            f"**المستخدم:** {user_name} {user_username}\n"
-            f"**ID:** `{user_info.get('id')}`\n"
-            f"**الاختبار:** {quiz_name}\n"
-            f"**النتيجة:** {score} من {total}"
+            f"**المستخدم:** {user_name} {user_username}\n**ID:** `{user_info.get('id')}`\n"
+            f"**الاختبار:** {quiz_name}\n**النتيجة:** {score} من {total}"
         )
         try:
             await context.bot.send_message(chat_id=admin_id, text=notification_text, parse_mode='Markdown')
         except Exception as e:
             logger.error(f"Failed to send notification to admin: {e}")
 
-    # Clear the session for the user
     if chat_id in user_sessions:
         del user_sessions[chat_id]
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Allows a user to cancel the quiz."""
+    """Allows a user to cancel the quiz and returns to main menu."""
     chat_id = update.effective_chat.id
+    
+    # NEW: Improved cancel logic
     if chat_id in user_sessions:
-        await end_quiz(chat_id, context)
+        del user_sessions[chat_id]
+        await update.message.reply_text("✅ تم إلغاء الاختبار بنجاح.")
+        # Show the main menu again
+        await show_main_menu(update)
     else:
         await update.message.reply_text("لا يوجد اختبار نشط لإلغائه. أرسل /start لبدء.")
 
 def main() -> None:
     load_quizzes_from_folder()
     token = os.environ.get("TELEGRAM_TOKEN")
-    if not token:
-        raise ValueError("TELEGRAM_TOKEN not set.")
+    if not token: raise ValueError("TELEGRAM_TOKEN not set.")
     
     application = Application.builder().token(token).build()
     
-    # Handlers for menu navigation and starting the quiz
+    # Handlers for menu and starting quiz
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(quiz_info_page_callback, pattern="^infopage_"))
     application.add_handler(CallbackQueryHandler(show_main_menu, pattern="^back_to_menu$"))
     application.add_handler(CallbackQueryHandler(start_quiz_callback, pattern="^startquiz_"))
     
-    # Handler for quiz answers
+    # Handler for quiz answers via polls
     application.add_handler(PollAnswerHandler(handle_poll_answer))
-
-    # Handler for cancelling
     application.add_handler(CommandHandler("cancel", cancel))
 
     application.run_polling()
