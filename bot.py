@@ -7,6 +7,7 @@ from telegram.constants import ParseMode
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, ContextTypes, PollAnswerHandler
 )
+from telegram.error import Forbidden
 
 # --- Configuration ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -16,6 +17,8 @@ logger = logging.getLogger(__name__)
 quizzes = {}
 # Session storage: { chat_id: { quiz_data } }
 user_sessions = {}
+# Poll tracking: { poll_id: chat_id }
+poll_tracker = {}
 
 # --- Helper Functions ---
 
@@ -136,34 +139,35 @@ async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         correct_option_id=correct_option_id, open_period=45, is_anonymous=False
     )
     
-    session['current_poll_id'] = message.poll.id
+    poll_tracker[message.poll.id] = chat_id
     session['current_message_id'] = message.message_id
     session['correct_option_id'] = correct_option_id
 
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles a user's answer, stops the current poll, and sends the next question."""
+    """Handles a user's answer to update their score."""
     answer = update.poll_answer
     user_id = answer.user.id
     session = user_sessions.get(user_id)
-    
     if not session or session.get('current_poll_id') != answer.poll_id: return
 
-    # Stop the poll immediately
-    try:
-        await context.bot.stop_poll(user_id, session['current_message_id'])
-    except Exception as e:
-        logger.warning(f"Could not stop poll, maybe it closed already: {e}")
-
-    # Update score
     if answer.option_ids[0] == session.get('correct_option_id'):
         session['score'] += 1
 
-    # Proceed to the next question
-    session['question_index'] += 1
-    await send_poll_question(user_id, context)
+async def handle_poll_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the closing of a poll to send the next question."""
+    poll = update.poll
+    if not poll.is_closed or poll.id not in poll_tracker: return
+    
+    chat_id = poll_tracker[poll.id]
+    session = user_sessions.get(chat_id)
+    if session:
+        session['question_index'] += 1
+        await send_poll_question(chat_id, context)
+    
+    del poll_tracker[poll.id]
 
 async def end_quiz(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Ends the quiz and sends results."""
+    """Ends a COMPLETED quiz and sends results."""
     session = user_sessions.get(chat_id)
     if not session: return
 
@@ -178,18 +182,42 @@ async def end_quiz(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         notification_text = (
             f"📊 **نتيجة اختبار جديدة**\n\n"
             f"**المستخدم:** {user_name} {user_username}\n**ID:** `{user_info.get('id')}`\n"
-            f"**الاختبار:** {quiz_name}\n**النتيجة:** {score} من {total}")
+            f"**الاختبار:** {quiz_name}\n**النتيجة:** {score} من {total}"
+        )
         try: await context.bot.send_message(chat_id=admin_id, text=notification_text, parse_mode=ParseMode.MARKDOWN)
         except Exception as e: logger.error(f"Failed to send notification to admin: {e}")
 
     if chat_id in user_sessions: del user_sessions[chat_id]
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Allows a user to cancel the quiz."""
+    """Cancels the current quiz without showing a score."""
     chat_id = update.effective_chat.id
-    if chat_id in user_sessions:
-        await end_quiz(chat_id, context) # End quiz to clear session
+    session = user_sessions.get(chat_id)
+    if session:
+        # --- NEW CANCEL LOGIC ---
+        user_info = session.get('user_info', {})
+        quiz_name = session.get('quiz_name', 'غير معروف')
+        
+        # 1. Delete the user's session
+        del user_sessions[chat_id]
+        
+        # 2. Inform the user
         await update.message.reply_text("✅ **تم إلغاء الاختبار بنجاح.**", parse_mode=ParseMode.MARKDOWN)
+        
+        # 3. Inform the admin about the cancellation
+        admin_id = os.environ.get("ADMIN_ID")
+        if admin_id and user_info:
+            user_name = user_info.get('name'); user_username = f"(@{user_info.get('username')})" if user_info.get('username') else ""
+            notification_text = (
+                f"⚠️ **تم إلغاء اختبار**\n\n"
+                f"**المستخدم:** {user_name} {user_username}\n"
+                f"**ID:** `{user_info.get('id')}`\n"
+                f"**الاختبار:** {quiz_name}"
+            )
+            try: await context.bot.send_message(chat_id=admin_id, text=notification_text, parse_mode=ParseMode.MARKDOWN)
+            except Exception as e: logger.error(f"Failed to send cancellation notification to admin: {e}")
+
+        # 4. Show the main menu
         await show_main_menu(update)
     else:
         await update.message.reply_text("لا يوجد اختبار نشط لإلغائه. أرسل /start لبدء.")
@@ -209,6 +237,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(start_quiz_callback, pattern="^startquiz_"))
     
     application.add_handler(PollAnswerHandler(handle_poll_answer))
+    application.add_handler(PollHandler(handle_poll_update))
     
     application.run_polling()
 
