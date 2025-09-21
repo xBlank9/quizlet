@@ -5,7 +5,7 @@ import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, ContextTypes, PollAnswerHandler, PollHandler
+    Application, CommandHandler, CallbackQueryHandler, ContextTypes, PollAnswerHandler
 )
 
 # --- Configuration ---
@@ -16,8 +16,6 @@ logger = logging.getLogger(__name__)
 quizzes = {}
 # Session storage: { chat_id: { quiz_data } }
 user_sessions = {}
-# Poll tracking: { poll_id: chat_id }
-poll_tracker = {}
 
 # --- Helper Functions ---
 
@@ -26,23 +24,17 @@ def load_quizzes_from_folder():
     global quizzes
     quizzes_dir = "quizzes"
     if not os.path.isdir(quizzes_dir):
-        os.makedirs(quizzes_dir)
-        return
+        os.makedirs(quizzes_dir); return
 
     for filename in os.listdir(quizzes_dir):
         if filename.endswith(".txt"):
             quiz_name = os.path.splitext(filename)[0].replace("_", " ")
             filepath = os.path.join(quizzes_dir, filename)
             try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    file_content = f.read()
-                
+                with open(filepath, 'r', encoding='utf-8') as f: file_content = f.read()
                 parsed_questions = parse_quiz_file_line_by_line(file_content)
-                if parsed_questions:
-                    quizzes[quiz_name] = parsed_questions
-                    logger.info(f"Loaded quiz '{quiz_name}'")
-            except Exception as e:
-                logger.error(f"Failed to load quiz file {filename}: {e}")
+                if parsed_questions: quizzes[quiz_name] = parsed_questions; logger.info(f"Loaded quiz '{quiz_name}'")
+            except Exception as e: logger.error(f"Failed to load quiz file {filename}: {e}")
 
 def parse_quiz_file_line_by_line(file_content: str) -> list:
     """A robust, line-by-line parser for a single quiz file."""
@@ -66,10 +58,7 @@ def parse_quiz_file_line_by_line(file_content: str) -> list:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays the main menu of quizzes."""
     if update.effective_chat.id in user_sessions:
-        await update.message.reply_text(
-            "أنت بالفعل في منتصف اختبار. 🙅‍♂️\n"
-            "الرجاء إكماله أولاً، أو استخدم الأمر /cancel لإلغائه."
-        )
+        await update.message.reply_text("أنت بالفعل في منتصف اختبار. 🙅‍♂️\nالرجاء إكماله أولاً، أو استخدم الأمر /cancel لإلغائه.")
         return
     await show_main_menu(update)
 
@@ -138,33 +127,31 @@ async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         correct_option_id=correct_option_id, open_period=45, is_anonymous=False
     )
     
-    poll_tracker[message.poll.id] = chat_id
+    session['current_poll_id'] = message.poll.id
+    session['current_message_id'] = message.message_id # Important for stopping the poll
     session['correct_option_id'] = correct_option_id
 
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles a user's vote in a poll to update their score."""
+    """Handles a user's answer, stops the current poll, and sends the next question."""
     answer = update.poll_answer
     user_id = answer.user.id
     session = user_sessions.get(user_id)
     
-    if not session: return
+    if not session or session.get('current_poll_id') != answer.poll_id: return
 
+    # Stop the poll immediately after the user answers
+    try:
+        await context.bot.stop_poll(user_id, session['current_message_id'])
+    except Exception as e:
+        logger.warning(f"Could not stop poll, maybe it closed already: {e}")
+
+    # Update score
     if answer.option_ids[0] == session.get('correct_option_id'):
         session['score'] += 1
 
-async def handle_poll_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the closing of a poll to send the next question."""
-    poll = update.poll
-    if not poll.is_closed or poll.id not in poll_tracker: return
-    
-    chat_id = poll_tracker[poll.id]
-    session = user_sessions.get(chat_id)
-    
-    if session:
-        session['question_index'] += 1
-        await send_poll_question(chat_id, context)
-    
-    del poll_tracker[poll.id]
+    # Proceed to the next question
+    session['question_index'] += 1
+    await send_poll_question(user_id, context)
 
 async def end_quiz(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Ends a COMPLETED quiz and sends results."""
@@ -179,11 +166,7 @@ async def end_quiz(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     admin_id = os.environ.get("ADMIN_ID")
     if admin_id and user_info:
         user_name = user_info.get('name'); user_username = f"(@{user_info.get('username')})" if user_info.get('username') else ""
-        notification_text = (
-            f"📊 **نتيجة اختبار جديدة**\n\n"
-            f"**المستخدم:** {user_name} {user_username}\n**ID:** `{user_info.get('id')}`\n"
-            f"**الاختبار:** {quiz_name}\n**النتيجة:** {score} من {total}"
-        )
+        notification_text = (f"📊 **نتيجة اختبار جديدة**\n\n**المستخدم:** {user_name} {user_username}\n**ID:** `{user_info.get('id')}`\n**الاختبار:** {quiz_name}\n**النتيجة:** {score} من {total}")
         try: await context.bot.send_message(chat_id=admin_id, text=notification_text, parse_mode=ParseMode.MARKDOWN)
         except Exception as e: logger.error(f"Failed to send notification to admin: {e}")
 
@@ -194,22 +177,14 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     session = user_sessions.get(chat_id)
     if session:
-        user_info = session.get('user_info', {})
-        quiz_name = session.get('quiz_name', 'غير معروف')
-        
+        user_info = session.get('user_info', {}); quiz_name = session.get('quiz_name', 'غير معروف')
         del user_sessions[chat_id]
-        
         await update.message.reply_text("✅ **تم إلغاء الاختبار بنجاح.**", parse_mode=ParseMode.MARKDOWN)
         
         admin_id = os.environ.get("ADMIN_ID")
         if admin_id and user_info:
             user_name = user_info.get('name'); user_username = f"(@{user_info.get('username')})" if user_info.get('username') else ""
-            notification_text = (
-                f"⚠️ **تم إلغاء اختبار**\n\n"
-                f"**المستخدم:** {user_name} {user_username}\n"
-                f"**ID:** `{user_info.get('id')}`\n"
-                f"**الاختبار:** {quiz_name}"
-            )
+            notification_text = (f"⚠️ **تم إلغاء اختبار**\n\n**المستخدم:** {user_name} {user_username}\n**ID:** `{user_info.get('id')}`\n**الاختبار:** {quiz_name}")
             try: await context.bot.send_message(chat_id=admin_id, text=notification_text, parse_mode=ParseMode.MARKDOWN)
             except Exception as e: logger.error(f"Failed to send cancellation notification to admin: {e}")
 
@@ -226,13 +201,10 @@ def main() -> None:
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel))
-    
     application.add_handler(CallbackQueryHandler(quiz_info_page_callback, pattern="^infopage_"))
     application.add_handler(CallbackQueryHandler(show_main_menu, pattern="^back_to_menu$"))
     application.add_handler(CallbackQueryHandler(start_quiz_callback, pattern="^startquiz_"))
-    
     application.add_handler(PollAnswerHandler(handle_poll_answer))
-    application.add_handler(PollHandler(handle_poll_update))
     
     application.run_polling()
 
