@@ -2,7 +2,8 @@ import os
 import logging
 import json
 import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, ContextTypes, PollAnswerHandler
 )
@@ -133,7 +134,6 @@ async def start_quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         'user_info': {'id': user.id, 'name': user.full_name, 'username': user.username}
     }
     
-    # NEW: Added reminder on how to cancel the quiz
     await query.edit_message_text(
         f"تمام! لنبدأ اختبار: **{quiz_name}**\n\n"
         f"ℹ️ يمكنك إرسال الأمر /cancel في أي وقت لإلغاء الاختبار.",
@@ -161,7 +161,7 @@ async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     random.shuffle(options)
     correct_option_id = options.index(q_data['correct'])
     
-    await context.bot.send_poll(
+    message = await context.bot.send_poll(
         chat_id=chat_id,
         question=question_text,
         options=options,
@@ -170,6 +170,9 @@ async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         open_period=45,
         is_anonymous=False
     )
+    
+    session['current_poll_id'] = message.poll.id
+    session['correct_option_id'] = correct_option_id
 
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles a user's answer to a poll."""
@@ -177,13 +180,8 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = answer.user.id
     session = user_sessions.get(user_id)
     
-    if not session: return
-
-    # Since polls don't close immediately, we can't reliably go to the next question here.
-    # We will just record the score. The quiz progresses as polls close.
-    # For a smoother experience, we'd need to handle poll closing events, which is more complex.
-    # This simplified logic records the score and the user waits for the next poll.
-    # A better approach would be to track poll IDs. For now, this is simpler.
+    if not session or session.get('current_poll_id') != answer.poll_id:
+        return
 
     chosen_option = answer.option_ids[0]
     if chosen_option == session['correct_option_id']:
@@ -227,6 +225,7 @@ async def end_quiz(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Allows a user to cancel the quiz and returns to main menu."""
     chat_id = update.effective_chat.id
+    
     if chat_id in user_sessions:
         del user_sessions[chat_id]
         await update.message.reply_text("✅ **تم إلغاء الاختبار بنجاح.**", parse_mode=ParseMode.MARKDOWN)
@@ -241,7 +240,7 @@ def main() -> None:
     
     application = Application.builder().token(token).build()
     
-    # Handlers for menu navigation and starting the quiz
+    # Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(quiz_info_page_callback, pattern="^infopage_"))
     application.add_handler(CallbackQueryHandler(show_main_menu, pattern="^back_to_menu$"))
