@@ -5,9 +5,8 @@ import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, ContextTypes, PollAnswerHandler
+    Application, CommandHandler, CallbackQueryHandler, ContextTypes, PollAnswerHandler, PollHandler
 )
-from telegram.error import Forbidden
 
 # --- Configuration ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -140,15 +139,15 @@ async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     )
     
     poll_tracker[message.poll.id] = chat_id
-    session['current_message_id'] = message.message_id
     session['correct_option_id'] = correct_option_id
 
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles a user's answer to update their score."""
+    """Handles a user's vote in a poll to update their score."""
     answer = update.poll_answer
     user_id = answer.user.id
     session = user_sessions.get(user_id)
-    if not session or session.get('current_poll_id') != answer.poll_id: return
+    
+    if not session: return
 
     if answer.option_ids[0] == session.get('correct_option_id'):
         session['score'] += 1
@@ -160,6 +159,7 @@ async def handle_poll_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     chat_id = poll_tracker[poll.id]
     session = user_sessions.get(chat_id)
+    
     if session:
         session['question_index'] += 1
         await send_poll_question(chat_id, context)
@@ -194,17 +194,13 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     session = user_sessions.get(chat_id)
     if session:
-        # --- NEW CANCEL LOGIC ---
         user_info = session.get('user_info', {})
         quiz_name = session.get('quiz_name', 'غير معروف')
         
-        # 1. Delete the user's session
         del user_sessions[chat_id]
         
-        # 2. Inform the user
         await update.message.reply_text("✅ **تم إلغاء الاختبار بنجاح.**", parse_mode=ParseMode.MARKDOWN)
         
-        # 3. Inform the admin about the cancellation
         admin_id = os.environ.get("ADMIN_ID")
         if admin_id and user_info:
             user_name = user_info.get('name'); user_username = f"(@{user_info.get('username')})" if user_info.get('username') else ""
@@ -217,7 +213,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             try: await context.bot.send_message(chat_id=admin_id, text=notification_text, parse_mode=ParseMode.MARKDOWN)
             except Exception as e: logger.error(f"Failed to send cancellation notification to admin: {e}")
 
-        # 4. Show the main menu
         await show_main_menu(update)
     else:
         await update.message.reply_text("لا يوجد اختبار نشط لإلغائه. أرسل /start لبدء.")
