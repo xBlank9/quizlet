@@ -4,7 +4,7 @@ Regarding relations of the pituitary gland which statement is INCORRECT:
 -Connected by its stalk with the hypothalamus
 -The body of sphenoid and the sphenoidal air sinus below
 
-During a postpartum checkup, a 29-year-old woman complains that she has been feeling unwell and also wonders why she has not been able to breastfeed her infant (lactation failure). MRI examination revealed affected pituitary gland vasculature. Which of the following arteries is most probably affected?
+During a postpartum checkup,a 29-year-old woman complains that she has been feeling unwell and also wonders why she has not been able to breastfeed her infant(lactation failure). MRI examination revealed affected pituitary gland vasculature. Which of the following arteries is most probably affected?
 +Internal carotid
 -Middle meningeal
 -External carotid
@@ -75,3 +75,4 @@ The pituitary gland lies in the sella turcica, immediately above:
 -Frontal sinus
 -Maxillary sinus
 -Ethmoid sinus
+
