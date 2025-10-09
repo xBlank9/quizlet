@@ -22,7 +22,8 @@ def load_quizzes_from_folder():
     """Loads all .txt quizzes from subdirectories inside the 'quizzes' folder."""
     global quizzes
     quizzes_dir = "quizzes"
-    if not os.path.isdir(quizzes_dir): os.makedirs(quizzes_dir); return
+    if not os.path.isdir(quizzes_dir):
+        os.makedirs(quizzes_dir); return
 
     for category in os.listdir(quizzes_dir):
         category_path = os.path.join(quizzes_dir, category)
@@ -176,4 +177,14 @@ def main() -> None:
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel))
-    application.add_handler(CallbackQueryHandler(show_main_menu, pattern="^back_to_main_menu$
+    # THIS IS THE FIXED LINE
+    application.add_handler(CallbackQueryHandler(show_main_menu, pattern="^back_to_main_menu$"))
+    application.add_handler(CallbackQueryHandler(category_menu_callback, pattern="^category_"))
+    application.add_handler(CallbackQueryHandler(quiz_info_page_callback, pattern="^infopage_"))
+    application.add_handler(CallbackQueryHandler(start_quiz_callback, pattern="^startquiz_"))
+    application.add_handler(PollAnswerHandler(handle_poll_answer))
+    
+    application.run_polling()
+
+if __name__ == "__main__":
+    main()
