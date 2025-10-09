@@ -5,7 +5,7 @@ import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, ContextTypes, PollAnswerHandler, PollHandler
+    Application, CommandHandler, CallbackQueryHandler, ContextTypes, PollAnswerHandler
 )
 
 # --- Configuration ---
@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 # --- In-memory storage ---
 quizzes = {}
 user_sessions = {}
-poll_tracker = {}
 
 # --- Helper Functions ---
 
@@ -75,12 +74,10 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, is_
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = "**أهلاً بك!** 👋\n\nالرجاء اختيار قسم الاختبارات:"
     
-    # NEW: Robust way to send/edit message to prevent crashes
     if is_edit and update.callback_query:
         try:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
-            logger.error(f"Error editing message for main menu: {e}")
             await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     else:
         await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
@@ -88,9 +85,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, is_
 async def category_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     category = query.data.split('_', 1)[1]
-    
     if category not in quizzes: await query.edit_message_text("عذرًا، هذا القسم لم يعد متاحًا."); return
-    
     keyboard = [[InlineKeyboardButton(name, callback_data=f"infopage_{category}|{name}")] for name in sorted(quizzes[category].keys())]
     keyboard.append([InlineKeyboardButton("🔙 عودة للقائمة الرئيسية", callback_data="back_to_main_menu")])
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -100,17 +95,13 @@ async def category_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def quiz_info_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     category, quiz_name = query.data.split('_', 1)[1].split('|', 1)
-
     if category not in quizzes or quiz_name not in quizzes[category]:
         await query.edit_message_text("عذرًا، هذا الاختبار لم يعد متاحًا."); return
-
     num_questions = len(quizzes[category][quiz_name])
     text = (f"**📖 اسم الاختبار:** {quiz_name}\n**🔢 عدد الأسئلة:** {num_questions}\n**⏱️ الوقت لكل سؤال:** 45 ثانية\n\nهل أنت مستعد؟")
-    keyboard = [[InlineKeyboardButton("🚀 ابدأ الاختبار", callback_data=f"startquiz_{category}|{quiz_name}")],
-                [InlineKeyboardButton("🔙 عودة لقائمة الاختبارات", callback_data=f"category_{category}")]] # NEW: Clearer button text
+    keyboard = [[InlineKeyboardButton("🚀 ابدأ الاختبار", callback_data=f"startquiz_{category}|{quiz_name}")], [InlineKeyboardButton("🔙 عودة لقائمة الاختبارات", callback_data=f"category_{category}")]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
 
-# --- (The rest of the code is the same as the final correct version) ---
 async def start_quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     user = query.from_user; chat_id = query.message.chat_id
@@ -132,24 +123,18 @@ async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     random.shuffle(options)
     correct_option_id = options.index(q_data['correct'])
     message = await context.bot.send_poll(chat_id=chat_id, question=question_text, options=options, type='quiz', correct_option_id=correct_option_id, open_period=45, is_anonymous=False)
-    poll_tracker[message.poll.id] = chat_id
+    session['current_message_id'] = message.message_id
     session['correct_option_id'] = correct_option_id
 
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = update.poll_answer; user_id = answer.user.id
     session = user_sessions.get(user_id)
-    if not session or session.get('current_poll_id') != answer.poll_id: return
+    if not session: return
+    try: await context.bot.stop_poll(user_id, session['current_message_id'])
+    except Exception as e: logger.warning(f"Could not stop poll: {e}")
     if answer.option_ids[0] == session.get('correct_option_id'): session['score'] += 1
-
-async def handle_poll_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    poll = update.poll
-    if not poll.is_closed or poll.id not in poll_tracker: return
-    chat_id = poll_tracker[poll.id]
-    session = user_sessions.get(chat_id)
-    if session:
-        session['question_index'] += 1
-        await send_poll_question(chat_id, context)
-    del poll_tracker[poll.id]
+    session['question_index'] += 1
+    await send_poll_question(user_id, context)
 
 async def end_quiz(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     session = user_sessions.get(chat_id)
@@ -191,14 +176,4 @@ def main() -> None:
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel))
-    application.add_handler(CallbackQueryHandler(show_main_menu, pattern="^back_to_main_menu$"))
-    application.add_handler(CallbackQueryHandler(category_menu_callback, pattern="^category_"))
-    application.add_handler(CallbackQueryHandler(quiz_info_page_callback, pattern="^infopage_"))
-    application.add_handler(CallbackQueryHandler(start_quiz_callback, pattern="^startquiz_"))
-    application.add_handler(PollAnswerHandler(handle_poll_answer))
-    application.add_handler(PollHandler(handle_poll_update))
-    
-    application.run_polling()
-
-if __name__ == "__main__":
-    main()
+    application.add_handler(CallbackQueryHandler(show_main_menu, pattern="^back_to_main_menu$
