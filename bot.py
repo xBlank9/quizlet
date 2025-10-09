@@ -75,9 +75,13 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, is_
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = "**أهلاً بك!** 👋\n\nالرجاء اختيار قسم الاختبارات:"
     
-    # NEW: Robust way to send/edit message
+    # NEW: Robust way to send/edit message to prevent crashes
     if is_edit and update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        try:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"Error editing message for main menu: {e}")
+            await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     else:
         await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
@@ -103,21 +107,19 @@ async def quiz_info_page_callback(update: Update, context: ContextTypes.DEFAULT_
     num_questions = len(quizzes[category][quiz_name])
     text = (f"**📖 اسم الاختبار:** {quiz_name}\n**🔢 عدد الأسئلة:** {num_questions}\n**⏱️ الوقت لكل سؤال:** 45 ثانية\n\nهل أنت مستعد؟")
     keyboard = [[InlineKeyboardButton("🚀 ابدأ الاختبار", callback_data=f"startquiz_{category}|{quiz_name}")],
-                [InlineKeyboardButton("🔙 عودة لقائمة القسم", callback_data=f"category_{category}")]]
+                [InlineKeyboardButton("🔙 عودة لقائمة الاختبارات", callback_data=f"category_{category}")]] # NEW: Clearer button text
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
 
+# --- (The rest of the code is the same as the final correct version) ---
 async def start_quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     user = query.from_user; chat_id = query.message.chat_id
     category, quiz_name = query.data.split('_', 1)[1].split('|', 1)
-    
     user_sessions[chat_id] = {'quiz_name': quiz_name, 'question_index': 0, 'score': 0, 'quiz_questions': quizzes[category][quiz_name], 'user_info': {'id': user.id, 'name': user.full_name, 'username': user.username}}
-    
     text = f"تمام! لنبدأ اختبار: **{quiz_name}**\n\nلإلغاء الاختبار في أي وقت، أرسل:\n/cancel"
     await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
     await send_poll_question(chat_id, context)
 
-# --- (The rest of the code remains the same) ---
 async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     session = user_sessions.get(chat_id);
     if not session: return
