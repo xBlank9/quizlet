@@ -77,7 +77,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, is_
     if is_edit and update.callback_query:
         try:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-        except Exception:
+        except Exception as e:
             await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     else:
         await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
@@ -98,7 +98,7 @@ async def quiz_info_page_callback(update: Update, context: ContextTypes.DEFAULT_
     if category not in quizzes or quiz_name not in quizzes[category]:
         await query.edit_message_text("عذرًا، هذا الاختبار لم يعد متاحًا."); return
     num_questions = len(quizzes[category][quiz_name])
-    text = (f"**📖 اسم الاختبار:** {quiz_name}\n**🔢 عدد الأسئلة:** {num_questions}\n**⏱️ الوقت لكل سؤال:** 45 ثانية\n\nهل أنت مستعد؟")
+    text = (f"**📖 اسم الاختبار:** {quiz_name}\n**🔢 عدد الأسئلة:** {num_questions}\n**⏱️ الوقت لكل سؤال:** 60 ثانية\n\nهل أنت مستعد؟") # MODIFIED
     keyboard = [[InlineKeyboardButton("🚀 ابدأ الاختبار", callback_data=f"startquiz_{category}|{quiz_name}")], [InlineKeyboardButton("🔙 عودة لقائمة الاختبارات", callback_data=f"category_{category}")]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
 
@@ -112,12 +112,11 @@ async def start_quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await send_poll_question(chat_id, context)
 
 async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    session = user_sessions.get(chat_id)
+    session = user_sessions.get(chat_id);
     if not session: return
     q_index = session['question_index']
     questions = session['quiz_questions']
-    if q_index >= len(questions):
-        await end_quiz(chat_id, context); return
+    if q_index >= len(questions): await end_quiz(chat_id, context); return
 
     q_data = questions[q_index]
     question_text = f"({q_index + 1}/{len(questions)}) {q_data['question']}"
@@ -127,15 +126,14 @@ async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     
     message = await context.bot.send_poll(
         chat_id=chat_id, question=question_text, options=options, type='quiz',
-        correct_option_id=correct_option_id, open_period=45, is_anonymous=False
+        correct_option_id=correct_option_id, open_period=60, is_anonymous=False # MODIFIED
     )
     
     session['correct_option_id'] = correct_option_id
     session['current_message_id'] = message.message_id
     
-    # Schedule a job to handle timeout
     job = context.job_queue.run_once(
-        on_timeout, 45, data={'chat_id': chat_id, 'question_index': q_index}, name=f"timer_{chat_id}"
+        on_timeout, 60, data={'chat_id': chat_id, 'question_index': q_index}, name=f"timer_{chat_id}" # MODIFIED
     )
     session['timeout_job'] = job
 
@@ -144,11 +142,9 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     session = user_sessions.get(user_id)
     if not session: return
 
-    # Cancel the timeout job because the user answered
     if 'timeout_job' in session and session['timeout_job']:
         session['timeout_job'].schedule_removal()
 
-    # Fast-path logic
     try: await context.bot.stop_poll(user_id, session['current_message_id'])
     except Exception as e: logger.warning(f"Could not stop poll: {e}")
     
@@ -165,14 +161,13 @@ async def on_timeout(context: ContextTypes.DEFAULT_TYPE):
     q_index_when_fired = job_data['question_index']
     
     session = user_sessions.get(chat_id)
-    # Only act if the user is still on the same question (i.e., they haven't answered)
     if session and session.get('question_index') == q_index_when_fired:
         try:
             await context.bot.stop_poll(chat_id, session['current_message_id'])
         except Exception as e:
             logger.warning(f"Could not stop poll on timeout: {e}")
         
-        await context.bot.send_message(chat_id, "⏰ **انتهى الوقت!**", parse_mode=ParseMode.MARKDOWN)
+        # MODIFIED: Removed the "Time's up!" message
         
         session['question_index'] += 1
         await send_poll_question(chat_id, context)
