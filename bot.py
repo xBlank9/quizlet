@@ -2,6 +2,7 @@ import os
 import logging
 import json
 import random
+import asyncio # <-- تمت إضافة هذا السطر
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -98,7 +99,7 @@ async def quiz_info_page_callback(update: Update, context: ContextTypes.DEFAULT_
     if category not in quizzes or quiz_name not in quizzes[category]:
         await query.edit_message_text("عذرًا، هذا الاختبار لم يعد متاحًا."); return
     num_questions = len(quizzes[category][quiz_name])
-    text = (f"**📖 اسم الاختبار:** {quiz_name}\n**🔢 عدد الأسئلة:** {num_questions}\n**⏱️ الوقت لكل سؤال:** 60 ثانية\n\nهل أنت مستعد؟") # MODIFIED
+    text = (f"**📖 اسم الاختبار:** {quiz_name}\n**🔢 عدد الأسئلة:** {num_questions}\n**⏱️ الوقت لكل سؤال:** 60 ثانية\n\nهل أنت مستعد؟")
     keyboard = [[InlineKeyboardButton("🚀 ابدأ الاختبار", callback_data=f"startquiz_{category}|{quiz_name}")], [InlineKeyboardButton("🔙 عودة لقائمة الاختبارات", callback_data=f"category_{category}")]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
 
@@ -112,11 +113,12 @@ async def start_quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await send_poll_question(chat_id, context)
 
 async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    session = user_sessions.get(chat_id);
+    session = user_sessions.get(chat_id)
     if not session: return
     q_index = session['question_index']
     questions = session['quiz_questions']
-    if q_index >= len(questions): await end_quiz(chat_id, context); return
+    if q_index >= len(questions):
+        await end_quiz(chat_id, context); return
 
     q_data = questions[q_index]
     question_text = f"({q_index + 1}/{len(questions)}) {q_data['question']}"
@@ -126,14 +128,14 @@ async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     
     message = await context.bot.send_poll(
         chat_id=chat_id, question=question_text, options=options, type='quiz',
-        correct_option_id=correct_option_id, open_period=60, is_anonymous=False # MODIFIED
+        correct_option_id=correct_option_id, open_period=60, is_anonymous=False
     )
     
     session['correct_option_id'] = correct_option_id
     session['current_message_id'] = message.message_id
     
     job = context.job_queue.run_once(
-        on_timeout, 60, data={'chat_id': chat_id, 'question_index': q_index}, name=f"timer_{chat_id}" # MODIFIED
+        on_timeout, 60, data={'chat_id': chat_id, 'question_index': q_index}, name=f"timer_{chat_id}"
     )
     session['timeout_job'] = job
 
@@ -163,11 +165,13 @@ async def on_timeout(context: ContextTypes.DEFAULT_TYPE):
     session = user_sessions.get(chat_id)
     if session and session.get('question_index') == q_index_when_fired:
         try:
+            # This stops the poll and reveals the correct answer
             await context.bot.stop_poll(chat_id, session['current_message_id'])
         except Exception as e:
             logger.warning(f"Could not stop poll on timeout: {e}")
         
-        # MODIFIED: Removed the "Time's up!" message
+        # NEW: Add a short delay to allow user to see the result
+        await asyncio.sleep(2)
         
         session['question_index'] += 1
         await send_poll_question(chat_id, context)
