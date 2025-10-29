@@ -7,7 +7,6 @@ from telegram.constants import ParseMode
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, ContextTypes, PollAnswerHandler, PollHandler
 )
-from telegram.error import Forbidden
 
 # --- Configuration ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -16,7 +15,7 @@ logger = logging.getLogger(__name__)
 # --- In-memory storage ---
 quizzes = {}
 user_sessions = {}
-poll_tracker = {}
+poll_tracker = {} # To link poll IDs to chat IDs
 
 # --- Helper Functions ---
 
@@ -58,11 +57,6 @@ def parse_quiz_file_line_by_line(file_content: str) -> list:
             current_question = {"question": line, "correct": None, "incorrect": []}
     if current_question and current_question.get('correct'): questions.append(current_question)
     return questions
-
-def is_admin(update: Update) -> bool:
-    """Checks if the user sending the command is the admin."""
-    admin_id = os.environ.get("ADMIN_ID")
-    return str(update.effective_user.id) == admin_id
 
 # --- Menu and Quiz Logic ---
 
@@ -155,6 +149,7 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     session['question_index'] += 1
     await send_poll_question(user_id, context)
 
+# --- THIS IS THE MISSING FUNCTION ---
 async def handle_poll_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the poll closing automatically after timeout (the slow/fallback path)."""
     poll = update.poll
@@ -163,6 +158,7 @@ async def handle_poll_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat_id = poll_tracker[poll.id]
     session = user_sessions.get(chat_id)
     
+    # Only proceed if the user hasn't already answered via the fast path
     if session and not session.get('answered_this_poll'):
         session['question_index'] += 1
         await send_poll_question(chat_id, context)
@@ -205,7 +201,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # --- ADMIN AND STATUS UPDATE HANDLERS ---
-
 async def leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Allows the admin to make the bot leave a group."""
     if not is_admin(update): return
@@ -260,7 +255,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(start_quiz_callback, pattern="^startquiz_"))
     
     application.add_handler(PollAnswerHandler(handle_poll_answer))
-    application.add_handler(PollHandler(handle_poll_update)) # <-- This is the line that was causing the error
+    application.add_handler(PollHandler(handle_poll_update)) # <-- This line now works
     
     application.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT, report_group_id))
 
