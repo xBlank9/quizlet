@@ -2,12 +2,12 @@ import os
 import logging
 import json
 import random
+import asyncio # <-- تمت إضافة هذا السطر
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, ContextTypes, PollAnswerHandler, PollHandler, MessageHandler, filters
+    Application, CommandHandler, CallbackQueryHandler, ContextTypes, PollAnswerHandler
 )
-from telegram.error import Forbidden
 
 # --- Configuration ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 # --- In-memory storage ---
 quizzes = {}
 user_sessions = {}
-poll_tracker = {}
 
 # --- Helper Functions ---
 
@@ -59,11 +58,6 @@ def parse_quiz_file_line_by_line(file_content: str) -> list:
     if current_question and current_question.get('correct'): questions.append(current_question)
     return questions
 
-def is_admin(update: Update) -> bool:
-    """Checks if the user sending the command is the admin."""
-    admin_id = os.environ.get("ADMIN_ID")
-    return str(update.effective_user.id) == admin_id
-
 # --- Menu and Quiz Logic ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -84,7 +78,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, is_
     if is_edit and update.callback_query:
         try:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-        except Exception:
+        except Exception as e:
             await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     else:
         await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
@@ -105,7 +99,7 @@ async def quiz_info_page_callback(update: Update, context: ContextTypes.DEFAULT_
     if category not in quizzes or quiz_name not in quizzes[category]:
         await query.edit_message_text("عذرًا، هذا الاختبار لم يعد متاحًا."); return
     num_questions = len(quizzes[category][quiz_name])
-    text = (f"**📖 اسم الاختبار:** {quiz_name}\n**🔢 عدد الأسئلة:** {num_questions}\n**⏱️ الوقت لكل سؤال:** 45 ثانية\n\nهل أنت مستعد؟")
+    text = (f"**📖 اسم الاختبار:** {quiz_name}\n**🔢 عدد الأسئلة:** {num_questions}\n**⏱️ الوقت لكل سؤال:** 60 ثانية\n\nهل أنت مستعد؟")
     keyboard = [[InlineKeyboardButton("🚀 ابدأ الاختبار", callback_data=f"startquiz_{category}|{quiz_name}")], [InlineKeyboardButton("🔙 عودة لقائمة الاختبارات", callback_data=f"category_{category}")]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
 
@@ -123,75 +117,86 @@ async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     if not session: return
     q_index = session['question_index']
     questions = session['quiz_questions']
-    if q_index >= len(questions): await end_quiz(chat_id, context, is_completed=True); return
-    
-    session['answered_this_poll'] = False
+    if q_index >= len(questions):
+        await end_quiz(chat_id, context); return
+
     q_data = questions[q_index]
     question_text = f"({q_index + 1}/{len(questions)}) {q_data['question']}"
     options = [q_data['correct']] + q_data['incorrect']
     random.shuffle(options)
     correct_option_id = options.index(q_data['correct'])
     
-    message = await context.bot.send_poll(chat_id=chat_id, question=question_text, options=options, type='quiz', correct_option_id=correct_option_id, open_period=45, is_anonymous=False)
+    message = await context.bot.send_poll(
+        chat_id=chat_id, question=question_text, options=options, type='quiz',
+        correct_option_id=correct_option_id, open_period=60, is_anonymous=False
+    )
     
-    poll_tracker[message.poll.id] = chat_id
     session['correct_option_id'] = correct_option_id
     session['current_message_id'] = message.message_id
+    
+    job = context.job_queue.run_once(
+        on_timeout, 60, data={'chat_id': chat_id, 'question_index': q_index}, name=f"timer_{chat_id}"
+    )
+    session['timeout_job'] = job
 
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the user's answer (the fast path)."""
     answer = update.poll_answer; user_id = answer.user.id
     session = user_sessions.get(user_id)
-    if not session or session.get('answered_this_poll'): return
-    
-    session['answered_this_poll'] = True
-    
+    if not session: return
+
+    if 'timeout_job' in session and session['timeout_job']:
+        session['timeout_job'].schedule_removal()
+
     try: await context.bot.stop_poll(user_id, session['current_message_id'])
-    except Exception as e: logger.warning(f"Could not stop poll (fast path), maybe it closed already: {e}")
+    except Exception as e: logger.warning(f"Could not stop poll: {e}")
     
     if answer.option_ids[0] == session.get('correct_option_id'):
         session['score'] += 1
-
+        
     session['question_index'] += 1
     await send_poll_question(user_id, context)
 
-async def handle_poll_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the poll closing automatically after timeout (the slow/fallback path)."""
-    poll = update.poll
-    if not poll.is_closed or poll.id not in poll_tracker: return
+async def on_timeout(context: ContextTypes.DEFAULT_TYPE):
+    """Handles when a user does not answer a question in time."""
+    job_data = context.job.data
+    chat_id = job_data['chat_id']
+    q_index_when_fired = job_data['question_index']
     
-    chat_id = poll_tracker[poll.id]
     session = user_sessions.get(chat_id)
-    
-    if session and not session.get('answered_this_poll'):
+    if session and session.get('question_index') == q_index_when_fired:
+        try:
+            # This stops the poll and reveals the correct answer
+            await context.bot.stop_poll(chat_id, session['current_message_id'])
+        except Exception as e:
+            logger.warning(f"Could not stop poll on timeout: {e}")
+        
+        # NEW: Add a short delay to allow user to see the result
+        await asyncio.sleep(2)
+        
         session['question_index'] += 1
         await send_poll_question(chat_id, context)
-    
-    if poll.id in poll_tracker: del poll_tracker[poll.id]
 
-async def end_quiz(chat_id: int, context: ContextTypes.DEFAULT_TYPE, is_completed: bool):
+async def end_quiz(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     session = user_sessions.get(chat_id)
     if not session: return
-    
-    if is_completed:
-        score, total, quiz_name, user_info = session['score'], len(session['quiz_questions']), session['quiz_name'], session['user_info']
-        final_text = (f"🎉 انتهى اختبار '**{quiz_name}**'!\n\nنتيجتك النهائية هي: **{score} من {total}**.\n\nلبدء اختبار آخر، أرسل /start.")
-        await context.bot.send_message(chat_id, text=final_text, parse_mode=ParseMode.MARKDOWN)
-        admin_id = os.environ.get("ADMIN_ID")
-        if admin_id and user_info:
-            user_name = user_info.get('name'); user_username = f"(@{user_info.get('username')})" if user_info.get('username') else ""
-            notification_text = (f"📊 **نتيجة اختبار جديدة**\n\n**المستخدم:** {user_name} {user_username}\n**ID:** `{user_info.get('id')}`\n**الاختبار:** {quiz_name}\n**النتيجة:** {score} من {total}")
-            try: await context.bot.send_message(chat_id=admin_id, text=notification_text, parse_mode=ParseMode.MARKDOWN)
-            except Exception as e: logger.error(f"Failed to send notification to admin: {e}")
-    
+    score, total, quiz_name, user_info = session['score'], len(session['quiz_questions']), session['quiz_name'], session['user_info']
+    final_text = (f"🎉 انتهى اختبار '**{quiz_name}**'!\n\nنتيجتك النهائية هي: **{score} من {total}**.\n\nلبدء اختبار آخر، أرسل /start.")
+    await context.bot.send_message(chat_id, text=final_text, parse_mode=ParseMode.MARKDOWN)
+    admin_id = os.environ.get("ADMIN_ID")
+    if admin_id and user_info:
+        user_name = user_info.get('name'); user_username = f"(@{user_info.get('username')})" if user_info.get('username') else ""
+        notification_text = (f"📊 **نتيجة اختبار جديدة**\n\n**المستخدم:** {user_name} {user_username}\n**ID:** `{user_info.get('id')}`\n**الاختبار:** {quiz_name}\n**النتيجة:** {score} من {total}")
+        try: await context.bot.send_message(chat_id=admin_id, text=notification_text, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e: logger.error(f"Failed to send notification to admin: {e}")
     if chat_id in user_sessions: del user_sessions[chat_id]
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     session = user_sessions.get(chat_id)
     if session:
-        await end_quiz(chat_id, context, is_completed=False)
+        if 'timeout_job' in session and session['timeout_job']: session['timeout_job'].schedule_removal()
         user_info = session.get('user_info', {}); quiz_name = session.get('quiz_name', 'غير معروف')
+        del user_sessions[chat_id]
         await update.message.reply_text("✅ **تم إلغاء الاختبار بنجاح.**", parse_mode=ParseMode.MARKDOWN)
         admin_id = os.environ.get("ADMIN_ID")
         if admin_id and user_info:
@@ -203,46 +208,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         await update.message.reply_text("لا يوجد اختبار نشط لإلغائه. أرسل /start لبدء.")
 
-
-# --- ADMIN AND STATUS UPDATE HANDLERS ---
-
-async def leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Allows the admin to make the bot leave a group."""
-    if not is_admin(update): return
-    if not context.args:
-        await update.message.reply_text("الرجاء تحديد ID المجموعة. مثال:\n`/leavegroup -100123456789`")
-        return
-    try:
-        chat_id_to_leave = int(context.args[0])
-        await context.bot.leave_chat(chat_id=chat_id_to_leave)
-        await update.message.reply_text(f"✅ لقد غادرت المجموعة ذات الـ ID: `{chat_id_to_leave}` بنجاح.")
-    except Exception as e:
-        await update.message.reply_text(f"لم أتمكن من مغادرة المجموعة. الخطأ: {e}")
-
-async def report_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Temporary handler to report the ID of any group it's in."""
-    if update.effective_chat.type in ["group", "supergroup"]:
-        admin_id = os.environ.get("ADMIN_ID")
-        chat = update.effective_chat
-        
-        if chat.id not in context.bot_data.get("reported_groups", set()):
-            if not admin_id: logger.error("ADMIN_ID not set"); return
-            text = (
-                f"ℹ️ **معلومات مجموعة**\n\n"
-                f"أنا موجود حاليًا في هذه المجموعة:\n"
-                f"**اسم المجموعة:** {chat.title}\n"
-                f"**ID:** `{chat.id}`\n\n"
-                f"يمكنك الآن استخدام هذا الـ ID لإخراجي بالأمر:\n"
-                f"`/leavegroup {chat.id}`"
-            )
-            try:
-                await context.bot.send_message(chat_id=admin_id, text=text, parse_mode=ParseMode.MARKDOWN)
-                if "reported_groups" not in context.bot_data:
-                    context.bot_data["reported_groups"] = set()
-                context.bot_data["reported_groups"].add(chat.id)
-            except Exception as e:
-                logger.error(f"Failed to send group info to admin: {e}")
-
 def main() -> None:
     load_quizzes_from_folder()
     token = os.environ.get("TELEGRAM_TOKEN")
@@ -252,18 +217,12 @@ def main() -> None:
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel))
-    application.add_handler(CommandHandler("leavegroup", leave_group))
-    
     application.add_handler(CallbackQueryHandler(show_main_menu, pattern="^back_to_main_menu$"))
     application.add_handler(CallbackQueryHandler(category_menu_callback, pattern="^category_"))
     application.add_handler(CallbackQueryHandler(quiz_info_page_callback, pattern="^infopage_"))
     application.add_handler(CallbackQueryHandler(start_quiz_callback, pattern="^startquiz_"))
-    
     application.add_handler(PollAnswerHandler(handle_poll_answer))
-    application.add_handler(PollHandler(handle_poll_update))
     
-    application.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT, report_group_id))
-
     application.run_polling()
 
 if __name__ == "__main__":
