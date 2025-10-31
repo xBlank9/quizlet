@@ -1,23 +1,21 @@
-import telebot
 import os
+import telebot
 
-TOKEN = os.environ.get('TELEGRAM_TOKEN')
-if not TOKEN:
-    raise SystemExit("Set TELEGRAM_TOKEN environment variable before running.")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+bot = telebot.TeleBot(TOKEN)
 
-bot = telebot.TeleBot(TOKEN, parse_mode=None)
+@bot.message_handler(commands=['leave'])
+def leave_group(message):
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.send_message(message.chat.id, "❗استخدم الأمر كده:\n/leave <group_id>")
+            return
 
-@bot.message_handler(func=lambda m: True)
-def show_group_id(m):
-    chat = m.chat
-    if chat.type in ['group', 'supergroup']:
-        text = f"Group: {chat.title}\nID: {chat.id}"
-        print(text)
-        try:
-            bot.send_message(m.from_user.id, text)
-        except Exception as e:
-            print("Cannot send private message:", e)
+        group_id = int(parts[1])
+        bot.leave_chat(group_id)
+        bot.send_message(message.chat.id, f"✅ تم الخروج من الجروب {group_id}.")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ حصل خطأ:\n{e}")
 
-if __name__ == '__main__':
-    print("Bot running... it will print and send you the group ID when it sees any message.")
-    bot.infinity_polling(timeout=20, long_polling_timeout=5)
+bot.polling()
