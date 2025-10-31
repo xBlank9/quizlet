@@ -1,227 +1,110 @@
 import os
 import logging
-import json
-import random
-import asyncio # <-- تمت إضافة هذا السطر
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, ContextTypes, PollAnswerHandler
+    Application, CommandHandler, ContextTypes
 )
+from telegram.error import Forbidden, BadRequest
 
-# --- Configuration ---
+# --- إعدادات أساسية ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- In-memory storage ---
-quizzes = {}
-user_sessions = {}
-
-# --- Helper Functions ---
-
-def load_quizzes_from_folder():
-    """Loads all .txt quizzes from subdirectories inside the 'quizzes' folder."""
-    global quizzes
-    quizzes_dir = "quizzes"
-    if not os.path.isdir(quizzes_dir): os.makedirs(quizzes_dir); return
-
-    for category in os.listdir(quizzes_dir):
-        category_path = os.path.join(quizzes_dir, category)
-        if os.path.isdir(category_path):
-            quizzes[category] = {}
-            for filename in os.listdir(category_path):
-                if filename.endswith(".txt"):
-                    quiz_name = os.path.splitext(filename)[0].replace("_", " ")
-                    filepath = os.path.join(category_path, filename)
-                    try:
-                        with open(filepath, 'r', encoding='utf-8') as f: file_content = f.read()
-                        parsed_questions = parse_quiz_file_line_by_line(file_content)
-                        if parsed_questions:
-                            quizzes[category][quiz_name] = parsed_questions
-                            logger.info(f"Loaded quiz '{quiz_name}' from category '{category}'")
-                    except Exception as e:
-                        logger.error(f"Failed to load quiz file {filename}: {e}")
-
-def parse_quiz_file_line_by_line(file_content: str) -> list:
-    questions, current_question = [], None
-    lines = file_content.replace('\r\n', '\n').strip().split('\n')
-    for line in lines:
-        line = line.strip()
-        if not line: continue
-        if line.startswith('+'):
-            if current_question: current_question['correct'] = line[1:].strip()
-        elif line.startswith('-'):
-            if current_question: current_question['incorrect'].append(line[1:].strip())
-        else:
-            if current_question and current_question.get('correct'): questions.append(current_question)
-            current_question = {"question": line, "correct": None, "incorrect": []}
-    if current_question and current_question.get('correct'): questions.append(current_question)
-    return questions
-
-# --- Menu and Quiz Logic ---
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_chat.id in user_sessions:
-        await update.message.reply_text("أنت بالفعل في منتصف اختبار. 🙅‍♂️\nالرجاء إكماله أولاً، أو استخدم الأمر /cancel لإلغائه.")
-        return
-    await show_main_menu(update, context, is_edit=False)
-
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, is_edit: bool = True):
-    chat_id = update.effective_chat.id
-    if not quizzes:
-        await context.bot.send_message(chat_id, "أهلاً بك! لا توجد اختبارات متاحة حاليًا. 😕"); return
-
-    keyboard = [[InlineKeyboardButton(cat, callback_data=f"category_{cat}")] for cat in sorted(quizzes.keys())]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    text = "**أهلاً بك!** 👋\n\nالرجاء اختيار قسم الاختبارات:"
-    
-    if is_edit and update.callback_query:
-        try:
-            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-        except Exception as e:
-            await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-    else:
-        await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-
-async def category_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer()
-    category = query.data.split('_', 1)[1]
-    if category not in quizzes: await query.edit_message_text("عذرًا، هذا القسم لم يعد متاحًا."); return
-    keyboard = [[InlineKeyboardButton(name, callback_data=f"infopage_{category}|{name}")] for name in sorted(quizzes[category].keys())]
-    keyboard.append([InlineKeyboardButton("🔙 عودة للقائمة الرئيسية", callback_data="back_to_main_menu")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    text = f"**القسم: {category}**\n\nالرجاء اختيار الاختبار الذي تريد البدء به:"
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-
-async def quiz_info_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer()
-    category, quiz_name = query.data.split('_', 1)[1].split('|', 1)
-    if category not in quizzes or quiz_name not in quizzes[category]:
-        await query.edit_message_text("عذرًا، هذا الاختبار لم يعد متاحًا."); return
-    num_questions = len(quizzes[category][quiz_name])
-    text = (f"**📖 اسم الاختبار:** {quiz_name}\n**🔢 عدد الأسئلة:** {num_questions}\n**⏱️ الوقت لكل سؤال:** 60 ثانية\n\nهل أنت مستعد؟")
-    keyboard = [[InlineKeyboardButton("🚀 ابدأ الاختبار", callback_data=f"startquiz_{category}|{quiz_name}")], [InlineKeyboardButton("🔙 عودة لقائمة الاختبارات", callback_data=f"category_{category}")]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-
-async def start_quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer()
-    user = query.from_user; chat_id = query.message.chat_id
-    category, quiz_name = query.data.split('_', 1)[1].split('|', 1)
-    user_sessions[chat_id] = {'quiz_name': quiz_name, 'question_index': 0, 'score': 0, 'quiz_questions': quizzes[category][quiz_name], 'user_info': {'id': user.id, 'name': user.full_name, 'username': user.username}}
-    text = f"تمام! لنبدأ اختبار: **{quiz_name}**\n\nلإلغاء الاختبار في أي وقت، أرسل:\n/cancel"
-    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
-    await send_poll_question(chat_id, context)
-
-async def send_poll_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    session = user_sessions.get(chat_id)
-    if not session: return
-    q_index = session['question_index']
-    questions = session['quiz_questions']
-    if q_index >= len(questions):
-        await end_quiz(chat_id, context); return
-
-    q_data = questions[q_index]
-    question_text = f"({q_index + 1}/{len(questions)}) {q_data['question']}"
-    options = [q_data['correct']] + q_data['incorrect']
-    random.shuffle(options)
-    correct_option_id = options.index(q_data['correct'])
-    
-    message = await context.bot.send_poll(
-        chat_id=chat_id, question=question_text, options=options, type='quiz',
-        correct_option_id=correct_option_id, open_period=60, is_anonymous=False
-    )
-    
-    session['correct_option_id'] = correct_option_id
-    session['current_message_id'] = message.message_id
-    
-    job = context.job_queue.run_once(
-        on_timeout, 60, data={'chat_id': chat_id, 'question_index': q_index}, name=f"timer_{chat_id}"
-    )
-    session['timeout_job'] = job
-
-async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    answer = update.poll_answer; user_id = answer.user.id
-    session = user_sessions.get(user_id)
-    if not session: return
-
-    if 'timeout_job' in session and session['timeout_job']:
-        session['timeout_job'].schedule_removal()
-
-    try: await context.bot.stop_poll(user_id, session['current_message_id'])
-    except Exception as e: logger.warning(f"Could not stop poll: {e}")
-    
-    if answer.option_ids[0] == session.get('correct_option_id'):
-        session['score'] += 1
-        
-    session['question_index'] += 1
-    await send_poll_question(user_id, context)
-
-async def on_timeout(context: ContextTypes.DEFAULT_TYPE):
-    """Handles when a user does not answer a question in time."""
-    job_data = context.job.data
-    chat_id = job_data['chat_id']
-    q_index_when_fired = job_data['question_index']
-    
-    session = user_sessions.get(chat_id)
-    if session and session.get('question_index') == q_index_when_fired:
-        try:
-            # This stops the poll and reveals the correct answer
-            await context.bot.stop_poll(chat_id, session['current_message_id'])
-        except Exception as e:
-            logger.warning(f"Could not stop poll on timeout: {e}")
-        
-        # NEW: Add a short delay to allow user to see the result
-        await asyncio.sleep(2)
-        
-        session['question_index'] += 1
-        await send_poll_question(chat_id, context)
-
-async def end_quiz(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    session = user_sessions.get(chat_id)
-    if not session: return
-    score, total, quiz_name, user_info = session['score'], len(session['quiz_questions']), session['quiz_name'], session['user_info']
-    final_text = (f"🎉 انتهى اختبار '**{quiz_name}**'!\n\nنتيجتك النهائية هي: **{score} من {total}**.\n\nلبدء اختبار آخر، أرسل /start.")
-    await context.bot.send_message(chat_id, text=final_text, parse_mode=ParseMode.MARKDOWN)
+# --- دالة للتحقق من أنك الأدمن ---
+def is_admin(update: Update) -> bool:
+    """يتحقق إذا كان المستخدم هو الأدمن المحدد في الإعدادات"""
     admin_id = os.environ.get("ADMIN_ID")
-    if admin_id and user_info:
-        user_name = user_info.get('name'); user_username = f"(@{user_info.get('username')})" if user_info.get('username') else ""
-        notification_text = (f"📊 **نتيجة اختبار جديدة**\n\n**المستخدم:** {user_name} {user_username}\n**ID:** `{user_info.get('id')}`\n**الاختبار:** {quiz_name}\n**النتيجة:** {score} من {total}")
-        try: await context.bot.send_message(chat_id=admin_id, text=notification_text, parse_mode=ParseMode.MARKDOWN)
-        except Exception as e: logger.error(f"Failed to send notification to admin: {e}")
-    if chat_id in user_sessions: del user_sessions[chat_id]
+    if not admin_id:
+        logger.warning("متغير ADMIN_ID غير موجود!")
+        return False
+    return str(update.effective_user.id) == admin_id
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# --- الدالة الأولى: لكشف ID الجروب ---
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    هذه الدالة تعمل في كل مكان.
+    إذا تم استدعاؤها من جروب، سترسل ID الجروب لك في الخاص.
+    """
     chat_id = update.effective_chat.id
-    session = user_sessions.get(chat_id)
-    if session:
-        if 'timeout_job' in session and session['timeout_job']: session['timeout_job'].schedule_removal()
-        user_info = session.get('user_info', {}); quiz_name = session.get('quiz_name', 'غير معروف')
-        del user_sessions[chat_id]
-        await update.message.reply_text("✅ **تم إلغاء الاختبار بنجاح.**", parse_mode=ParseMode.MARKDOWN)
-        admin_id = os.environ.get("ADMIN_ID")
-        if admin_id and user_info:
-            user_name = user_info.get('name'); user_username = f"(@{user_info.get('username')})" if user_info.get('username') else ""
-            notification_text = (f"⚠️ **تم إلغاء اختبار**\n\n**المستخدم:** {user_name} {user_username}\n**ID:** `{user_info.get('id')}`\n**الاختبار:** {quiz_name}")
-            try: await context.bot.send_message(chat_id=admin_id, text=notification_text, parse_mode=ParseMode.MARKDOWN)
-            except Exception as e: logger.error(f"Failed to send cancellation notification to admin: {e}")
-        await show_main_menu(update, context, is_edit=False)
-    else:
-        await update.message.reply_text("لا يوجد اختبار نشط لإلغائه. أرسل /start لبدء.")
+    chat_type = update.effective_chat.type
 
+    # إذا كان الأمر في جروب أو سوبر جروب
+    if chat_type in ["group", "supergroup"]:
+        admin_id = os.environ.get("ADMIN_ID")
+        chat = update.effective_chat
+        
+        if not admin_id:
+            logger.error("ADMIN_ID غير معين، لا يمكن إرسال التقرير.")
+            return
+
+        # تجهيز الرسالة لإرسالها لك في الخاص
+        text = (
+            f"ℹ️ **معلومات مجموعة**\n\n"
+            f"تم إرسال /start في المجموعة:\n"
+            f"**اسم المجموعة:** {chat.title}\n"
+            f"**ID:** `{chat.id}`\n\n"
+            f"يمكنك الآن استخدام هذا الـ ID لإخراجي بالأمر:\n"
+            f"`/leavegroup {chat.id}`"
+        )
+        try:
+            # إرسال معلومات الجروب إلى محادثتك الخاصة
+            await context.bot.send_message(chat_id=admin_id, text=text, parse_mode=ParseMode.MARKDOWN)
+            # الرد في الجروب (اختياري)
+            await update.message.reply_text("تم إرسال معلومات هذا الجروب إلى الأدمن.")
+        except Forbidden:
+            logger.error(f"فشل إرسال المعلومات. هل قمت بحظر البوت الخاص بك؟")
+        except Exception as e:
+            logger.error(f"فشل إرسال معلومات الجروب للأدمن: {e}")
+    
+    # إذا كان الأمر في محادثة خاصة
+    elif chat_type == "private":
+        if is_admin(update):
+            await update.message.reply_text("أنا في وضع الصيانة وجاهز لاستقبال أوامر الأدمن. استخدم `/leavegroup <ID>` لطردي من مجموعة.")
+        else:
+            await update.message.reply_text("البوت في وضع الصيانة حاليًا.")
+
+# --- الدالة الثانية: لإجبار البوت على المغادرة ---
+async def leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر للأدمن فقط لإجبار البوت على مغادرة جروب معين"""
+    
+    # التأكد أنك الأدمن وأنك ترسل الأمر في الخاص
+    if not is_admin(update):
+        return # يتجاهل الأمر إذا لم يكن من الأدمن
+    
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("لأسباب أمنية، هذا الأمر يعمل في المحادثات الخاصة فقط.")
+        return
+
+    # التأكد من وجود ID مع الأمر
+    if not context.args:
+        await update.message.reply_text("الرجاء تحديد ID المجموعة. مثال:\n`/leavegroup -100123456789`")
+        return
+        
+    try:
+        chat_id_to_leave = int(context.args[0])
+        await context.bot.leave_chat(chat_id=chat_id_to_leave)
+        await update.message.reply_text(f"✅ لقد غادرت المجموعة ذات الـ ID: `{chat_id_to_leave}` بنجاح.")
+    except (ValueError, IndexError):
+         await update.message.reply_text("الـ ID غير صالح. يجب أن يكون رقمًا صحيحًا (غالبًا يبدأ بسالب).")
+    except BadRequest as e:
+        if "Chat not found" in str(e):
+            await update.message.reply_text("لم أتمكن من العثور على مجموعة بهذا الـ ID.")
+        else:
+            await update.message.reply_text(f"حدث خطأ: {e}")
+    except Exception as e:
+        await update.message.reply_text(f"لم أتمكن من مغادرة المجموعة. الخطأ: {e}")
+
+# --- دالة التشغيل الرئيسية ---
 def main() -> None:
-    load_quizzes_from_folder()
     token = os.environ.get("TELEGRAM_TOKEN")
     if not token: raise ValueError("TELEGRAM_TOKEN not set.")
     
     application = Application.builder().token(token).build()
     
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("cancel", cancel))
-    application.add_handler(CallbackQueryHandler(show_main_menu, pattern="^back_to_main_menu$"))
-    application.add_handler(CallbackQueryHandler(category_menu_callback, pattern="^category_"))
-    application.add_handler(CallbackQueryHandler(quiz_info_page_callback, pattern="^infopage_"))
-    application.add_handler(CallbackQueryHandler(start_quiz_callback, pattern="^startquiz_"))
-    application.add_handler(PollAnswerHandler(handle_poll_answer))
+    # تفعيل الأوامر
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("leavegroup", leave_group))
     
     application.run_polling()
 
