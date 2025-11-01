@@ -112,9 +112,9 @@ What occurs during the capacitation of spermatozoa?
 
 Which phase follows the penetration of the zona pellucida?
 -Acrosomal reaction
--Fusion of oocyte-sperm cell membranes
++Fusion of oocyte-sperm cell membranes
 -Capacitation
-+Cortical reaction
+-Cortical reaction
 
 What is the result of the fusion of the male and female pronuclei?
 -Formation of two separate nuclei
