@@ -42,8 +42,8 @@ Concerning intraembryonic mesoderm, all are true EXCEPT:
 
 On what day is the first somite formed?
 -18
--20
-+22
++20
+-22
 -24
 
 Which structure does not turn under into the ventral surface of the embryo during folding of the head?
@@ -200,4 +200,5 @@ What does the term "somite" refer to in embryonic development?
 -A type of germ layer
 +Segmented blocks of paraxial mesoderm
 -The primitive node
+
 -The neural tube
