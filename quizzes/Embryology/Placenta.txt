@@ -47,8 +47,8 @@ Which of the following is a feature of the maternal surface of the placenta?
 -Smooth and shiny.
 
 "The placenta grows too deeply into the uterine wall" describes which of the following?
-+Placenta accreta.
--Placenta percreta.
+-Placenta accreta.
++Placenta percreta.
 -Placenta previa centralis.
 -Placenta previa lateralis.
 
@@ -138,4 +138,5 @@ The umbilical cord is attached to the amnion away from the placenta, which descr
 -Battlefield place.
 -Circumvallate the placenta.
 -Succenturiate placenta.
+
 
