@@ -28,7 +28,7 @@ amniotic fluid is mainly produced by which source after the 20th week of pregnan
 -Chorionic villi.
 -Syncytiotrophoblast.
 
-A marked decrease in amniotic fluid volume (oligohydramnios) may cause which fetal complications?
+A marked decrease in amniotic fluid volume (oligohydramnios) caused by which fetal complications?
 -Hydrocephalus.
 +Renal agenesis.
 -Pulmonary hypoplasia.
@@ -82,5 +82,5 @@ The primordial germ cells that eventually form the oogonia and spermatogonia ori
 -Sex cords of the developing gonad
 -Gonadal ridge
 -Chorion
-
 +Yolk sac
+
