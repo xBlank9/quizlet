@@ -6,7 +6,7 @@ The recurrent laryngeal nerve is closely related to, the terminal part of
 
 Regarding thyroid gland which of the followings is INCORRECT:
 +Its isthmus lies in front of the 3rd, 4th and 5th tracheal rings
--is supplied by the middle thyroid artery
+-is supplied by the middle thyroid vein
 -Originates from the caudal end of the thyroglossal duct
 -Surrounded by the pretracheal fascia
 
@@ -171,3 +171,4 @@ A 27-year-old woman with a goiter comes to the hospital for surgical treatment. 
 -External laryngeal nerve
 -Internal laryngeal nerve
 -Hypoglossal nerve
+
